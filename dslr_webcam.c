@@ -14,10 +14,9 @@
 #include <gphoto2.h>
 #include <jpeglib.h>
 
-
+#define VIDEODEV "/dev/video0"
 #define FRAMEWIDTH 640
 #define FRAMEHEIGHT 426
-#define PIXELSIZE 3
 
 #define gpcheck(cmd) gpcheck_x(cmd, __FILE__, __LINE__, __func__, #cmd)
 
@@ -31,7 +30,7 @@ static void process_frame(int fd, struct jpeg_decompress_struct *cinfo);
 sig_atomic_t do_continue = 1;
 
 
-int main(int argc, char **argv)
+int main()
 {
   Camera *camera;
   GPContext *context;
@@ -41,7 +40,7 @@ int main(int argc, char **argv)
   struct jpeg_error_mgr jerr;
 
   /* Init videodev */
-  vidfd = open("/dev/video0", O_RDWR);
+  vidfd = open(VIDEODEV, O_RDWR);
   assert(vidfd>=0);
   videodev_init(vidfd);
 
@@ -86,25 +85,50 @@ int main(int argc, char **argv)
   return 0;
 }
 
+/*
+ * rgb2yuyv code deliberately taken from guvcview
+ */
 /*clip value between 0 and 255*/
 #define CLIP(value) (unsigned char)(((value)>0xFF)?0xff:(((value)<0)?0:(value)))
 
 void rgb2yuyv(unsigned char *pyuv, unsigned char *prgb, int width, int height) 
 {
-
-  int i=0;
-  for(i=0;i<(width*height*3);i+=6) 
+  int i;
+  for(i=0; i<(width*height*3); i+=6) 
   {
     /* y */ 
-    *pyuv++ =CLIP(0.299 * (prgb[i] - 128) + 0.587 * (prgb[i+1] - 128) + 0.114 * (prgb[i+2] - 128) + 128);
+    *pyuv++ = CLIP(
+           0.299 * (prgb[i  ] - 128) 
+         + 0.587 * (prgb[i+1] - 128) 
+         + 0.114 * (prgb[i+2] - 128) + 128);
+    
     /* u */
-    *pyuv++ =CLIP(((- 0.147 * (prgb[i] - 128) - 0.289 * (prgb[i+1] - 128) + 0.436 * (prgb[i+2] - 128) + 128) +
-          (- 0.147 * (prgb[i+3] - 128) - 0.289 * (prgb[i+4] - 128) + 0.436 * (prgb[i+5] - 128) + 128))/2);
+    *pyuv++ = CLIP((
+        (- 0.147 * (prgb[i  ] - 128) 
+         - 0.289 * (prgb[i+1] - 128) 
+         + 0.436 * (prgb[i+2] - 128) + 128) 
+        +
+        (- 0.147 * (prgb[i+3] - 128) 
+         - 0.289 * (prgb[i+4] - 128) 
+         + 0.436 * (prgb[i+5] - 128) + 128)
+        )/2);
+    
     /* y1 */ 
-    *pyuv++ =CLIP(0.299 * (prgb[i+3] - 128) + 0.587 * (prgb[i+4] - 128) + 0.114 * (prgb[i+5] - 128) + 128); 
+    *pyuv++ = CLIP(
+           0.299 * (prgb[i+3] - 128) 
+         + 0.587 * (prgb[i+4] - 128) 
+         + 0.114 * (prgb[i+5] - 128) + 128); 
+
     /* v*/
-    *pyuv++ =CLIP(((0.615 * (prgb[i] - 128) - 0.515 * (prgb[i+1] - 128) - 0.100 * (prgb[i+2] - 128) + 128) +
-          (0.615 * (prgb[i+3] - 128) - 0.515 * (prgb[i+4] - 128) - 0.100 * (prgb[i+5] - 128) + 128))/2);
+    *pyuv++ = CLIP((
+        (  0.615 * (prgb[i  ] - 128) 
+         - 0.515 * (prgb[i+1] - 128) 
+         - 0.100 * (prgb[i+2] - 128) + 128) 
+        +
+        (  0.615 * (prgb[i+3] - 128) 
+         - 0.515 * (prgb[i+4] - 128) 
+         - 0.100 * (prgb[i+5] - 128) + 128)
+        )/2);
   }
 }
 
@@ -125,7 +149,7 @@ static void process_frame(int fd, struct jpeg_decompress_struct *cinfo)
     jpeg_read_scanlines(cinfo, rows + cinfo->output_scanline, FRAMEHEIGHT);
   jpeg_finish_decompress(cinfo);
 
-  rgb2yuyv(uyvy, rgb, FRAMEWIDTH, FRAMEHEIGHT);
+  rgb2yuyv(yuv, rgb, FRAMEWIDTH, FRAMEHEIGHT);
   n = write(fd, yuv, sizeof(yuv));
 }
 
@@ -137,46 +161,20 @@ static void sig_handler(int sig)
 
 static void gpcheck_x(int result, const char *file, int line, const char *func, const char *command)
 {
+  const char *error_str = NULL;
+  char tmp[200];
+
   if (result>0 || result==GP_OK)
     return;
 
-  const char *error_str = NULL;
-  char tmp[200];
-  switch (result)
+  error_str = gp_result_as_string(result);
+  if (error_str == NULL)
   {
-    case GP_ERROR_CORRUPTED_DATA:
-      error_str = "Corrupted data";
-      break;
-    case GP_ERROR_FILE_EXISTS:
-      error_str = "File exists";
-      break;
-    case GP_ERROR_MODEL_NOT_FOUND:
-      error_str = "Model not found";
-      break;
-    case GP_ERROR_DIRECTORY_NOT_FOUND:
-      error_str = "Directory not found";
-      break;
-    case GP_ERROR_CAMERA_BUSY:
-      error_str = "Busy";
-      break;
-    case GP_ERROR_CANCEL:
-      error_str = "Canceled";
-      break;
-    case GP_ERROR_CAMERA_ERROR:
-      error_str = "Camera error";
-      break;
-    case GP_ERROR_OS_FAILURE:
-      error_str = "OS failure";
-      break;
-    default:
-      sprintf(tmp, "unknown(%d)", result);
-      error_str = tmp;
-  } 
-  if (error_str)
-  {
-    fprintf(stderr, "ERROR @ %s:%d (%s)\n %s -> %s\n", file, line, func, command, error_str);
-    exit(1);
+    sprintf(tmp, "unknown(%d)", result);
+    error_str = tmp;
   }
+  fprintf(stderr, "ERROR @ %s:%d (%s)\n %s -> %s\n", file, line, func, command, error_str);
+  exit(1);
 }
 
 static void videodev_init(int fd)
